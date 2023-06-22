@@ -57,6 +57,7 @@ func (s *server) Run() (err error) {
 			if err != nil {
 				if err2, ok := err.(*net.OpError); ok {
 					if err2.Temporary() {
+						time.Sleep(time.Second)
 						continue
 					}
 				}

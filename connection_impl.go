@@ -62,7 +62,7 @@ func (c *connection) Writer() Writer {
 
 // IsActive implements Connection.
 func (c *connection) IsActive() bool {
-	return true
+	return c.isCloseBy(none)
 }
 
 // SetIdleTimeout implements Connection.
