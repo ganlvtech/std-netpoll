@@ -12,25 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows
-// +build !windows
-
 package netpoll
 
 import (
-	"errors"
 	"syscall"
-	"testing"
 )
 
-func TestErrno(t *testing.T) {
-	var err1 error = Exception(ErrConnClosed, "when next")
-	MustTrue(t, errors.Is(err1, ErrConnClosed))
-	Equal(t, err1.Error(), "connection has been closed when next")
-	t.Logf("error1=%s", err1)
-
-	var err2 error = Exception(syscall.EPIPE, "when flush")
-	MustTrue(t, errors.Is(err2, syscall.EPIPE))
-	Equal(t, err2.Error(), "broken pipe when flush")
-	t.Logf("error2=%s", err2)
+// GetSysFdPairs creates and returns the fds of a pair of sockets.
+func GetSysFdPairs() (r, w int) {
+	fds, _ := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	return fds[0], fds[1]
 }

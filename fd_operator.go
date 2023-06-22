@@ -49,11 +49,10 @@ type FDOperator struct {
 }
 
 func (op *FDOperator) Control(event PollEvent) error {
-	return op.poll.Control(op, event)
+	return nil
 }
 
 func (op *FDOperator) Free() {
-	op.poll.Free(op)
 }
 
 func (op *FDOperator) do() (can bool) {

@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows
-// +build !windows
-
 package netpoll
 
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -49,11 +47,23 @@ func (s *server) Run() (err error) {
 		OnRead: s.OnRead,
 		OnHup:  s.OnHup,
 	}
-	s.operator.poll = pollmanager.Pick()
 	err = s.operator.Control(PollReadable)
 	if err != nil {
 		s.onQuit(err)
 	}
+	go func() {
+		for {
+			err := s.OnRead(nil)
+			if err != nil {
+				if err2, ok := err.(*net.OpError); ok {
+					if err2.Temporary() {
+						continue
+					}
+				}
+				return
+			}
+		}
+	}()
 	return err
 }
 

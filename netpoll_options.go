@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows
-// +build !windows
-
 package netpoll
 
 import (
@@ -34,14 +31,14 @@ import (
 //	    netpoll.SetNumLoops(...)
 //	}
 func SetNumLoops(numLoops int) error {
-	return setNumLoops(numLoops)
+	return nil
 }
 
 // SetLoadBalance sets the load balancing method. Load balancing is always a best effort to attempt
 // to distribute the incoming connections between multiple polls.
 // This option only works when NumLoops is set.
 func SetLoadBalance(lb LoadBalance) error {
-	return setLoadBalance(lb)
+	return nil
 }
 
 func SetLoggerOutput(w io.Writer) {
