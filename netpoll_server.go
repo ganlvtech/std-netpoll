@@ -122,6 +122,37 @@ func (s *server) OnRead(p Poll) error {
 	if !connection.IsActive() {
 		return nil
 	}
+	go func() {
+		c := connection
+		defer c.Close()
+		for c.IsActive() {
+			bs := c.inputs(c.inputBarrier.bs)
+			if len(bs) > 0 {
+				if c.readTimeout > 0 {
+					err = c.Conn.SetReadDeadline(time.Now().Add(c.readTimeout))
+					if err != nil {
+						return
+					}
+				}
+				n2, err := c.Conn.Read(bs[0])
+				if err != nil {
+					if err2, ok := err.(*net.OpError); ok {
+						if err2.Timeout() {
+							time.Sleep(time.Second)
+							continue
+						}
+					}
+					return
+				}
+				err = c.inputAck(n2)
+				if err != nil {
+					return
+				}
+			} else {
+				time.Sleep(time.Second)
+			}
+		}
+	}()
 	var fd = conn.(Conn).Fd()
 	connection.AddCloseCallback(func(connection Connection) error {
 		s.connections.Delete(fd)

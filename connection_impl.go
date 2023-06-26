@@ -17,6 +17,7 @@ package netpoll
 import (
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,9 +32,11 @@ type connection struct {
 	locker
 	operator        *FDOperator
 	readTimeout     time.Duration
+	readTimer       *time.Timer
 	readTrigger     chan struct{}
 	waitReadSize    int64
 	writeTimeout    time.Duration
+	writeTimer      *time.Timer
 	writeTrigger    chan error
 	inputBuffer     *LinkBuffer
 	outputBuffer    *LinkBuffer
@@ -376,6 +379,8 @@ func (c *connection) waitRead(n int) (err error) {
 	if n <= c.inputBuffer.Len() {
 		return nil
 	}
+	atomic.StoreInt64(&c.waitReadSize, int64(n))
+	defer atomic.StoreInt64(&c.waitReadSize, 0)
 	if c.readTimeout > 0 {
 		return c.waitReadWithTimeout(n)
 	}
@@ -384,52 +389,44 @@ func (c *connection) waitRead(n int) (err error) {
 		if !c.IsActive() {
 			return Exception(ErrConnClosed, "wait read")
 		}
-		bs := c.inputs(c.inputBarrier.bs)
-		if len(bs) > 0 {
-			n2, err := c.Conn.Read(bs[0])
-			if err != nil {
-				return Exception(err, "when read")
-			}
-			err = c.inputAck(n2)
-			if err != nil {
-				return Exception(err, "when read")
-			}
-		}
+		<-c.readTrigger
 	}
 	return nil
 }
 
 // waitReadWithTimeout will wait full n bytes or until timeout.
 func (c *connection) waitReadWithTimeout(n int) (err error) {
-	err = c.Conn.SetReadDeadline(time.Now().Add(c.readTimeout))
-	if err != nil {
-		return err
+	// set read timeout
+	if c.readTimer == nil {
+		c.readTimer = time.NewTimer(c.readTimeout)
+	} else {
+		c.readTimer.Reset(c.readTimeout)
 	}
 
 	for c.inputBuffer.Len() < n {
 		if !c.IsActive() {
-			return Exception(ErrConnClosed, "wait read")
+			// cannot return directly, stop timer before !
+			err = Exception(ErrConnClosed, "wait read")
+			break
 		}
 
-		bs := c.inputs(c.inputBarrier.bs)
-		if len(bs) > 0 {
-			n2, err := c.Conn.Read(bs[0])
-			if err != nil {
-				if err2, ok := err.(*net.OpError); ok {
-					if err2.Timeout() {
-						break
-					}
-				}
-				return Exception(err, "when read")
+		select {
+		case <-c.readTimer.C:
+			// double check if there is enough data to be read
+			if c.inputBuffer.Len() >= n {
+				return nil
 			}
-			err = c.inputAck(n2)
-			if err != nil {
-				return Exception(err, "when read")
-			}
+			return Exception(ErrReadTimeout, c.RemoteAddr().String())
+		case <-c.readTrigger:
+			continue
 		}
 	}
 
-	return nil
+	// clean timer.C
+	if !c.readTimer.Stop() {
+		<-c.readTimer.C
+	}
+	return err
 }
 
 // flush write data directly.
@@ -439,6 +436,13 @@ func (c *connection) flush() error {
 	}
 	// TODO: Let the upper layer pass in whether to use ZeroCopy.
 	var bs = c.outputBuffer.GetBytes(c.outputBarrier.bs)
+
+	if c.writeTimeout > 0 {
+		err := c.Conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+		if err != nil {
+			return err
+		}
+	}
 	n := 0
 	for _, b := range bs {
 		n1, err := c.Conn.Write(b)
@@ -447,8 +451,10 @@ func (c *connection) flush() error {
 		}
 		n += n1
 	}
+
+	var err error
 	if n > 0 {
-		err := c.outputBuffer.Skip(n)
+		err = c.outputBuffer.Skip(n)
 		c.outputBuffer.Release()
 		if err != nil {
 			return Exception(err, "when flush")
@@ -458,10 +464,46 @@ func (c *connection) flush() error {
 	if c.outputBuffer.IsEmpty() {
 		return nil
 	}
+	err = c.operator.Control(PollR2RW)
+	if err != nil {
+		return Exception(err, "when flush")
+	}
+	c.triggerWrite(nil)
 
 	return c.waitFlush()
 }
 
 func (c *connection) waitFlush() (err error) {
-	return nil
+	if c.writeTimeout == 0 {
+		select {
+		case err = <-c.writeTrigger:
+		}
+		return err
+	}
+
+	// set write timeout
+	if c.writeTimer == nil {
+		c.writeTimer = time.NewTimer(c.writeTimeout)
+	} else {
+		c.writeTimer.Reset(c.writeTimeout)
+	}
+
+	select {
+	case err = <-c.writeTrigger:
+		if !c.writeTimer.Stop() { // clean timer
+			<-c.writeTimer.C
+		}
+		return err
+	case <-c.writeTimer.C:
+		select {
+		// try fetch writeTrigger if both cases fires
+		case err = <-c.writeTrigger:
+			return err
+		default:
+		}
+		// if timeout, remove write event from poller
+		// we cannot flush it again, since we don't if the poller is still process outputBuffer
+		c.operator.Control(PollRW2R)
+		return Exception(ErrWriteTimeout, c.RemoteAddr().String())
+	}
 }
